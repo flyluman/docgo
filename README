@@ -1,0 +1,30 @@
+docgo
+
+docgo is a lightweight tool that automatically generates missing Go documentation comments for exported structs and functions. It helps keep Go projects properly documented and resolves many golangci-lint warnings related to missing documentation on exported declarations.
+
+Features
+
+* Automatically adds missing documentation comments.
+* Processes exported structs and functions.
+* Recursively scans all Go source files in a project.
+* Preserves existing documentation comments.
+* Helps satisfy golangci-lint documentation checks.
+
+Installation
+
+Build and install the tool by running:
+
+```
+make
+sudo make install
+```
+
+Usage
+
+From the root of your Go project, run:
+
+```
+docgo
+```
+
+docgo will recursively scan the project and add documentation comments to any exported structs or functions that are missing them. Existing comments are never modified.
