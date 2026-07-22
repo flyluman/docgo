@@ -1,3 +1,4 @@
+// Package main ...
 package main
 
 import (
@@ -22,12 +23,12 @@ func addMissingDocComments(file *dst.File) {
 
 		switch n := node.(type) {
 		case *dst.Field:
-			n.Decs.NodeDecs.Start.Clear()
+			n.Decs.Start.Clear()
 
 		case *dst.FuncDecl:
-			if c.Parent() == file && n.Name.IsExported() && len(n.Decs.NodeDecs.Start) == 0 {
+			if c.Parent() == file && n.Name.IsExported() && len(n.Decs.Start) == 0 {
 				doc := fmt.Sprintf("// %s [TODO:description]", n.Name.Name)
-				n.Decs.NodeDecs.Start.Prepend(doc)
+				n.Decs.Start.Prepend(doc)
 			}
 
 		case *dst.GenDecl:
@@ -40,14 +41,14 @@ func addMissingDocComments(file *dst.File) {
 				case *dst.TypeSpec:
 					if s.Name.IsExported() {
 						if isGroup {
-							if len(s.Decs.NodeDecs.Start) == 0 {
+							if len(s.Decs.Start) == 0 {
 								doc := fmt.Sprintf("// %s [TODO:description]", s.Name.Name)
-								s.Decs.NodeDecs.Start.Prepend(doc)
+								s.Decs.Start.Prepend(doc)
 							}
 						} else {
-							if len(n.Decs.NodeDecs.Start) == 0 && len(s.Decs.NodeDecs.Start) == 0 {
+							if len(n.Decs.Start) == 0 && len(s.Decs.Start) == 0 {
 								doc := fmt.Sprintf("// %s [TODO:description]", s.Name.Name)
-								n.Decs.NodeDecs.Start.Prepend(doc)
+								n.Decs.Start.Prepend(doc)
 							}
 						}
 					}
@@ -55,14 +56,14 @@ func addMissingDocComments(file *dst.File) {
 					for _, name := range s.Names {
 						if name.IsExported() {
 							if isGroup {
-								if len(s.Decs.NodeDecs.Start) == 0 {
+								if len(s.Decs.Start) == 0 {
 									doc := fmt.Sprintf("// %s [TODO:description]", name.Name)
-									s.Decs.NodeDecs.Start.Prepend(doc)
+									s.Decs.Start.Prepend(doc)
 								}
 							} else {
-								if len(n.Decs.NodeDecs.Start) == 0 && len(s.Decs.NodeDecs.Start) == 0 {
+								if len(n.Decs.Start) == 0 && len(s.Decs.Start) == 0 {
 									doc := fmt.Sprintf("// %s [TODO:description]", name.Name)
-									n.Decs.NodeDecs.Start.Prepend(doc)
+									n.Decs.Start.Prepend(doc)
 								}
 							}
 							break
@@ -76,38 +77,68 @@ func addMissingDocComments(file *dst.File) {
 	}, nil)
 }
 
-func processFile(filePath string) error {
-	src, err := os.ReadFile(filePath)
-	if err != nil {
-		return fmt.Errorf("failed to read file %s: %w", filePath, err)
+func processPackage(filePaths []string) error {
+	type parsedFile struct {
+		path string
+		file *dst.File
 	}
 
-	f, err := decorator.Parse(src)
-	if err != nil {
-		return fmt.Errorf("failed to parse %s: %w", filePath, err)
+	var files []parsedFile
+	hasPkgDoc := false
+
+	for _, path := range filePaths {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("failed to read file %s: %w", path, err)
+		}
+
+		f, err := decorator.Parse(src)
+		if err != nil {
+			return fmt.Errorf("failed to parse %s: %w", path, err)
+		}
+
+		if len(f.Decs.Start) > 0 || len(f.Decs.Package) > 0 {
+			hasPkgDoc = true
+		}
+
+		files = append(files, parsedFile{path: path, file: f})
 	}
 
-	addMissingDocComments(f)
-
-	fset, astFile, err := decorator.RestoreFile(f)
-	if err != nil {
-		return fmt.Errorf("failed to restore DST to AST for file %s: %w", filePath, err)
+	if len(files) == 0 {
+		return nil
 	}
 
-	var buf bytes.Buffer
-	if err := format.Node(&buf, fset, astFile); err != nil {
-		return fmt.Errorf("failed to format modified AST for %s: %w", filePath, err)
+	if !hasPkgDoc {
+		first := files[0].file
+		doc := fmt.Sprintf("// Package %s [TODO:description]", first.Name.Name)
+		first.Decs.Start.Prepend(doc)
 	}
 
-	if err := os.WriteFile(filePath, buf.Bytes(), 0o644); err != nil {
-		return fmt.Errorf("failed to write updated file %s: %w", filePath, err)
+	for _, pf := range files {
+		addMissingDocComments(pf.file)
+
+		fset, astFile, err := decorator.RestoreFile(pf.file)
+		if err != nil {
+			return fmt.Errorf("failed to restore DST to AST for file %s: %w", pf.path, err)
+		}
+
+		var buf bytes.Buffer
+		if err := format.Node(&buf, fset, astFile); err != nil {
+			return fmt.Errorf("failed to format modified AST for %s: %w", pf.path, err)
+		}
+
+		if err := os.WriteFile(pf.path, buf.Bytes(), 0o644); err != nil {
+			return fmt.Errorf("failed to write updated file %s: %w", pf.path, err)
+		}
 	}
 
 	return nil
 }
 
 func processDirectory(root string) error {
-	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+	pkgFiles := make(map[string][]string)
+
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -121,14 +152,25 @@ func processDirectory(root string) error {
 		}
 
 		if strings.HasSuffix(info.Name(), ".go") && !strings.HasSuffix(info.Name(), "_test.go") {
-			fmt.Printf("Updating %s...\n", path)
-			if err := processFile(path); err != nil {
-				return fmt.Errorf("error processing %s: %w", path, err)
-			}
+			dir := filepath.Dir(path)
+			pkgFiles[dir] = append(pkgFiles[dir], path)
 		}
 
 		return nil
 	})
+
+	if err != nil {
+		return err
+	}
+
+	for dir, files := range pkgFiles {
+		fmt.Printf("Processing package directory %s...\n", dir)
+		if err := processPackage(files); err != nil {
+			return fmt.Errorf("error processing package in %s: %w", dir, err)
+		}
+	}
+
+	return nil
 }
 
 func main() {
